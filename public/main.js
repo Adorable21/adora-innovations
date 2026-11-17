@@ -1,4 +1,4 @@
-/* Adora Innovations — early access form + header state */
+/* Nerqovia pilot evaluation form + header state */
 (function () {
   'use strict';
 
@@ -17,12 +17,14 @@
 
   /* ------------------------------------------------------------- form -- */
 
-  var form = document.getElementById('early-access-form');
+  var form = document.getElementById('pilot-evaluation-form');
   if (!form) return;
 
   var card     = document.querySelector('.form-card');
   var nameEl   = document.getElementById('name');
   var emailEl  = document.getElementById('email');
+  var companyEl = document.getElementById('company');
+  var jobTitleEl = document.getElementById('job-title');
   var hpEl     = document.getElementById('company_website');
   var btn      = document.getElementById('submit-btn');
   var status   = document.getElementById('form-status');
@@ -39,24 +41,32 @@
   }
 
   function validate(focusFirst) {
-    var nameOk  = nameEl.value.trim().length >= 2;
-    var emailOk = EMAIL_RE.test(emailEl.value.trim());
-    setError(nameEl, 'name-error', !nameOk);
-    setError(emailEl, 'email-error', !emailOk);
-    if (focusFirst) (nameOk ? (emailOk ? null : emailEl) : nameEl)?.focus();
-    return nameOk && emailOk;
+    var fields = [
+      { input: nameEl, error: 'name-error', valid: nameEl.value.trim().length >= 2 },
+      { input: emailEl, error: 'email-error', valid: EMAIL_RE.test(emailEl.value.trim()) },
+      { input: companyEl, error: 'company-error', valid: companyEl.value.trim().length > 0 },
+      { input: jobTitleEl, error: 'job-title-error', valid: jobTitleEl.value.trim().length > 0 }
+    ];
+    var firstInvalid = null;
+    fields.forEach(function (field) {
+      setError(field.input, field.error, !field.valid);
+      if (!field.valid && !firstInvalid) firstInvalid = field.input;
+    });
+    if (focusFirst && firstInvalid) firstInvalid.focus();
+    return !firstInvalid;
   }
 
-  // Clear an error as soon as the field becomes valid again.
-  nameEl.addEventListener('input', function () {
-    if (nameEl.getAttribute('aria-invalid') === 'true' && nameEl.value.trim().length >= 2) {
-      setError(nameEl, 'name-error', false);
-    }
-  });
-  emailEl.addEventListener('input', function () {
-    if (emailEl.getAttribute('aria-invalid') === 'true' && EMAIL_RE.test(emailEl.value.trim())) {
-      setError(emailEl, 'email-error', false);
-    }
+  [
+    { input: nameEl, error: 'name-error', valid: function () { return nameEl.value.trim().length >= 2; } },
+    { input: emailEl, error: 'email-error', valid: function () { return EMAIL_RE.test(emailEl.value.trim()); } },
+    { input: companyEl, error: 'company-error', valid: function () { return companyEl.value.trim().length > 0; } },
+    { input: jobTitleEl, error: 'job-title-error', valid: function () { return jobTitleEl.value.trim().length > 0; } }
+  ].forEach(function (field) {
+    field.input.addEventListener('input', function () {
+      if (field.input.getAttribute('aria-invalid') === 'true' && field.valid()) {
+        setError(field.input, field.error, false);
+      }
+    });
   });
 
   function showError(html) {
@@ -75,8 +85,8 @@
           '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" ' +
           'stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>' +
         '</span>' +
-        '<h3>You&rsquo;re on the list' + (safe ? ', ' + safe : '') + '.</h3>' +
-        '<p>We&rsquo;ll be in touch to arrange a short demo using your own supplier quotes.</p>' +
+        '<h3>Thank you' + (safe ? ', ' + safe : '') + '.</h3>' +
+        '<p>Your Nerqovia pilot evaluation request has been received. We&rsquo;ll be in touch to discuss next steps.</p>' +
       '</div>';
     status.classList.add('is-visible');
   }
@@ -84,7 +94,7 @@
   function setLoading(on) {
     btn.disabled = on;
     btn.classList.toggle('is-loading', on);
-    btn.querySelector('.btn-label').textContent = on ? 'Sending…' : 'Request Early Access';
+    btn.querySelector('.btn-label').textContent = on ? 'Sending…' : 'Request a Pilot Evaluation';
   }
 
   form.addEventListener('submit', function (e) {
@@ -102,6 +112,8 @@
     var payload = {
       name: nameEl.value.trim(),
       email: emailEl.value.trim(),
+      company: companyEl.value.trim(),
+      job_title: jobTitleEl.value.trim(),
       company_website: ''
     };
 
@@ -133,8 +145,8 @@
         showError(
           (body.error || 'Something went wrong on our side.') +
           ' Please email us at <a href="mailto:' + CONTACT + '?subject=' +
-          encodeURIComponent('Early access request') + '">' + CONTACT +
-          '</a> and we&rsquo;ll add you personally.'
+          encodeURIComponent('Nerqovia pilot evaluation request') + '">' + CONTACT +
+          '</a> and we&rsquo;ll follow up about your request.'
         );
       })
       .catch(function () {

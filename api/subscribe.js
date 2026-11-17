@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
+
 /**
- * POST /api/subscribe  →  { name, email }
+ * POST /api/subscribe  →  { name, email, company?, job_title? }
  *
- * Adds an early-access lead to whichever mailing list is configured.
+ * Adds a pilot evaluation request to whichever mailing list is configured.
  * Set ONE of the two providers in the Vercel project's environment variables:
  *
  *   Brevo      BREVO_API_KEY          (+ optional BREVO_LIST_ID)
@@ -83,6 +85,14 @@ function classify(status, detail = '') {
   return 'other';
 }
 
+function logEvent(category, requestId) {
+  console.error('[subscribe]', {
+    category,
+    timestamp: new Date().toISOString(),
+    requestId,
+  });
+}
+
 async function addToBrevo({ name, email }) {
   const { first, last } = splitName(name);
   const listId = Number.parseInt(process.env.BREVO_LIST_ID || '', 10);
@@ -150,11 +160,13 @@ async function addToMailchimp({ name, email }) {
 
 /* ------------------------------------------------------- notifications -- */
 
-function alertBody({ name, email, captured, detail }) {
+function alertBody({ name, email, company, jobTitle, captured, detail }) {
   const when = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
   const lines = [
     `Name:  ${name}`,
     `Email: ${email}`,
+    ...(company ? [`Company: ${company}`] : []),
+    ...(jobTitle ? [`Job title: ${jobTitle}`] : []),
     `Time:  ${when}`,
     '',
     captured
@@ -178,8 +190,8 @@ async function sendAlert(lead) {
       to: [{ email: to }],
       replyTo: { email: lead.email, name: lead.name },
       subject: lead.captured
-        ? `Early access request — ${lead.name}`
-        : `ACTION NEEDED: early access request not saved — ${lead.name}`,
+        ? `Nerqovia pilot evaluation request — ${lead.name}`
+        : `ACTION NEEDED: pilot evaluation request not saved — ${lead.name}`,
       textContent: alertBody(lead),
     }),
   });
@@ -197,6 +209,8 @@ async function postWebhook(lead) {
     body: JSON.stringify({
       name: lead.name,
       email: lead.email,
+      company: lead.company,
+      jobTitle: lead.jobTitle,
       capturedInList: lead.captured,
       submittedAt: new Date().toISOString(),
       source: 'adorainnovations.com',
@@ -212,10 +226,10 @@ async function postWebhook(lead) {
 // Never throws. Returns true only if a channel actually delivered something —
 // an unconfigured channel resolves to false, so "skipped" can never be mistaken
 // for "the lead reached a human".
-async function notify(lead) {
+async function notify(lead, requestId) {
   const results = await Promise.allSettled([sendAlert(lead), postWebhook(lead)]);
   for (const r of results) {
-    if (r.status === 'rejected') console.error('[subscribe] notification failed:', r.reason?.message ?? r.reason);
+    if (r.status === 'rejected') logEvent('notification_delivery_failed', requestId);
   }
   return results.some((r) => r.status === 'fulfilled' && r.value === true);
 }
@@ -228,6 +242,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed.' });
   }
 
+  const requestId = randomUUID();
   const ip =
     (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
     req.socket?.remoteAddress ||
@@ -247,28 +262,30 @@ export default async function handler(req, res) {
 
   const name = String(body.name ?? '').trim().slice(0, 120);
   const email = String(body.email ?? '').trim().toLowerCase().slice(0, 200);
+  const company = String(body.company ?? '').trim().slice(0, 160);
+  const jobTitle = String(body.job_title ?? '').trim().slice(0, 120);
 
   if (name.length < 2) return res.status(400).json({ error: 'Please enter your full name.' });
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Please enter a valid email address.' });
+  if (!company) return res.status(400).json({ error: 'Please enter your company name.' });
+  if (!jobTitle) return res.status(400).json({ error: 'Please enter your job title.' });
 
   const useBrevo = Boolean(process.env.BREVO_API_KEY);
   const useMailchimp = Boolean(process.env.MAILCHIMP_API_KEY);
 
   if (!useBrevo && !useMailchimp) {
-    console.error(
-      '[subscribe] no mailing-list provider configured. Set BREVO_API_KEY or ' +
-      'MAILCHIMP_API_KEY in the Vercel project settings.',
-      { name, email }
-    );
+    logEvent('mailing_list_provider_not_configured', requestId);
     // A webhook alone can still capture the lead, so this is not automatically
     // a dead end.
-    const reached = await notify({ name, email, captured: false, detail: 'no mailing-list provider configured' });
+    const reached = await notify({
+      name, email, company, jobTitle, captured: false, detail: 'no mailing-list provider configured',
+    }, requestId);
     if (reached) {
-      console.log('[subscribe] captured via notification only', email);
+      logEvent('notification_fallback_accepted', requestId);
       return res.status(200).json({ ok: true });
     }
-    console.error('[subscribe] LEAD NOT CAPTURED', { name, email });
-    return res.status(500).json({ error: 'Signup is not configured yet.', fallback: true });
+    logEvent('submission_not_captured', requestId);
+    return res.status(500).json({ error: 'Pilot requests are not configured yet.', fallback: true });
   }
 
   try {
@@ -277,44 +294,42 @@ export default async function handler(req, res) {
       : await addToMailchimp({ name, email });
 
     if (result.ok) {
-      console.log('[subscribe] added', email);
-      await notify({ name, email, captured: true });
+      await notify({ name, email, company, jobTitle, captured: true }, requestId);
       return res.status(200).json({ ok: true });
     }
 
-    // Always log the lead itself on failure — Vercel's logs are then the last
-    // place it can be recovered from.
-    console.error('[subscribe] provider rejected the request',
-      { status: result.status, kind: result.kind, detail: result.detail, name, email });
+    logEvent(`provider_rejected_${result.kind}`, requestId);
 
     // The list rejected them, but an alert still puts the lead in front of a
     // human, which is what actually matters.
     const reached = await notify({
-      name, email, captured: false,
+      name, email, company, jobTitle, captured: false,
       detail: result.kind === 'limit' ? 'the mailing list is at capacity' : `provider returned ${result.status}`,
-    });
+    }, requestId);
     if (reached) {
-      console.log('[subscribe] captured via notification only', email);
+      logEvent('notification_fallback_accepted', requestId);
       return res.status(200).json({ ok: true });
     }
-    console.error('[subscribe] LEAD NOT CAPTURED', { name, email });
+    logEvent('submission_not_captured', requestId);
 
     if (result.kind === 'limit') {
       return res.status(503).json({
-        error: 'Our early-access list is at capacity right now.',
+        error: 'We cannot receive pilot evaluation requests right now.',
         fallback: true,
       });
     }
     return res.status(502).json({ error: 'We could not add you just now.', fallback: true });
-  } catch (err) {
-    console.error('[subscribe] unexpected failure', { err, name, email });
-    const reached = await notify({ name, email, captured: false, detail: 'unexpected failure' })
+  } catch {
+    logEvent('unexpected_submission_failure', requestId);
+    const reached = await notify({
+      name, email, company, jobTitle, captured: false, detail: 'unexpected failure',
+    }, requestId)
       .catch(() => false);
     if (reached) {
-      console.log('[subscribe] captured via notification only', email);
+      logEvent('notification_fallback_accepted', requestId);
       return res.status(200).json({ ok: true });
     }
-    console.error('[subscribe] LEAD NOT CAPTURED', { name, email });
+    logEvent('submission_not_captured', requestId);
     return res.status(502).json({ error: 'We could not add you just now.', fallback: true });
   }
 }

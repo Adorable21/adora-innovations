@@ -1,7 +1,7 @@
 {
-  "name": "Adora Innovations",
-  "short_name": "Adora",
-  "description": "AI Commercial Intelligence for Procurement Teams",
+  "name": "Nerqovia by Adora Innovations",
+  "short_name": "Nerqovia",
+  "description": "Turn messy supplier quotations into a decision you can defend.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
